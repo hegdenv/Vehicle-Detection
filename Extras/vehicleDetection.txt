@@ -1,0 +1,84 @@
+# Install necessary libraries
+!pip install filterpy scikit-image
+
+# Mount Google Drive
+from google.colab import drive
+drive.mount('/content/drive')
+
+# Import necessary libraries
+import cv2
+import numpy as np
+from tensorflow.keras.models import load_model
+from google.colab.patches import cv2_imshow
+from sort import Sort
+
+# Load your trained CNN model for vehicle classification
+model = load_model('/content/drive/MyDrive/Models/mymodel.keras')
+
+# Load video
+cap = cv2.VideoCapture('/content/drive/MyDrive/Datasets/Test_Video.mp4')
+
+# Initialize SORT tracker and variables
+tracker = Sort()
+vehicle_count = 0
+frame_count = 0
+interval = 10  # Process every 10th frame for efficiency
+counting_line_position = 300
+tracked_vehicles = {}  # Track vehicle IDs that cross the counting line
+backSub = cv2.createBackgroundSubtractorMOG2()
+
+while cap.isOpened():
+    ret, frame = cap.read()
+    if not ret:
+        break
+
+    frame_count += 1
+    if frame_count % interval != 0:
+        continue
+
+    # Background subtraction to isolate moving objects
+    fg_mask = backSub.apply(frame)
+    _, fg_mask = cv2.threshold(fg_mask, 200, 255, cv2.THRESH_BINARY)
+
+    # Detect contours on the mask
+    contours, _ = cv2.findContours(fg_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    detections = []
+
+    for cnt in contours:
+        if cv2.contourArea(cnt) < 500:
+            continue
+        x, y, w, h = cv2.boundingRect(cnt)
+        detections.append([x, y, x + w, y + h, 1.0])
+
+    # Update tracker
+    tracked_objects = tracker.update(np.array(detections))
+
+    for obj in tracked_objects:
+        x1, y1, x2, y2, obj_id = map(int, obj)
+        
+        # Extract and preprocess the region of interest
+        roi = frame[y1:y2, x1:x2]
+        resized_roi = cv2.resize(roi, (model.input_shape[1], model.input_shape[2]))
+        input_roi = np.expand_dims(resized_roi, axis=0) / 255.0
+
+        # Predict vehicle presence
+        prediction = model.predict(input_roi)
+        if prediction[0][0] > 0.5:
+            vehicle_center_y = y1 + (y2 - y1) // 2
+
+            # Count vehicle if it crosses the line
+            if vehicle_center_y > counting_line_position and obj_id not in tracked_vehicles:
+                vehicle_count += 1
+                tracked_vehicles[obj_id] = True
+
+            # Draw bounding box and ID label
+            cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
+            cv2.putText(frame, f'ID: {obj_id}', (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+
+    # Show the frame with detections
+    cv2_imshow(frame)
+
+# Release video capture
+cap.release()
+cv2.destroyAllWindows()
+print(f"Total vehicle count: {vehicle_count}")
